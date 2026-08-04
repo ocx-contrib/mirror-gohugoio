@@ -216,7 +216,7 @@ versions:
   min: "0.163.2"
   new_per_run: 10
   # Assigned minute — never minute 0, which stampedes the fleet's runners.
-  poll_interval: "51 */6 * * *"
+  poll_interval: "23 4-23/6 * * *"
 
 tests:
   # `script:` resolves from the REPOSITORY ROOT — unlike `metadata.default` and
