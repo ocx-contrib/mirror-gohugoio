@@ -184,9 +184,8 @@ assets:
     - "^hugo_extended_\\d+\\.\\d+\\.\\d+_linux-amd64\\.tar\\.gz$"
   "linux/arm64+libc.glibc":
     - "^hugo_extended_\\d+\\.\\d+\\.\\d+_linux-arm64\\.tar\\.gz$"
-  # PASS 2 — uncomment together with the matching `platforms:` key below.
-  # windows/amd64:
-  #   - "^hugo_extended_\\d+\\.\\d+\\.\\d+_windows-amd64\\.zip$"
+  windows/amd64:
+    - "^hugo_extended_\\d+\\.\\d+\\.\\d+_windows-amd64\\.zip$"
 
 asset_type:
   # FLAT archives on every platform — verified with `tar tvf` / `unzip -l` at
@@ -249,12 +248,11 @@ platforms:
     containers:
       - { image: "ubuntu:24.04", shell: bash }
       - { image: "fedora:40",    shell: bash }
-  # PASS 2 — uncomment together with the matching `assets:` key above.
   # No `containers:` on windows: those runners have no Linux container engine
   # and the key is rejected at spec load.
-  # windows/amd64:
-  #   runner: windows-latest
-  #   shell: pwsh
+  windows/amd64:
+    runner: windows-latest
+    shell: pwsh
   #
   # windows/arm64 is NOT pre-written even as a comment: the extended variant
   # ships no windows-arm64 asset at all, so there is nothing to uncomment
