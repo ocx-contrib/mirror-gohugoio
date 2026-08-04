@@ -1,0 +1,272 @@
+## mirror-gohugoio — the single spec for ocx.sh/gohugoio/hugo.
+##
+## There is deliberately NO mirror-base.yml and no `extends:`. This repository
+## holds one package, every key below is package-owned, and `extends:` is a
+## SHALLOW top-level merge whose classic failure is a child restating
+## `platforms:` to tweak one runner and silently dropping every `containers:`
+## entry with it. Keeping one file removes that trap structurally
+## (mirror-astral-sh ships the same shape). A second package here would add a
+## sibling directory and only then a base — that is a content move, not a
+## rename, and changes no generated workflow filename.
+
+name: hugo
+
+# Logical index package `gohugoio/hugo` at the physical path
+# `ghcr.io/ocx-contrib/gohugoio/hugo` — slash segments, never hyphen-flattened.
+# The first segment must be this repo's own GitHub owner: GITHUB_TOKEN only
+# authorises packages owned by the repository the workflow runs in.
+#
+# Namespace rule 2 (the org is the project's own brand): Hugo is published by
+# the `gohugoio` organisation, which is the project's own identity rather than
+# a maintainer's personal handle, so the org names the namespace and the tool
+# names the package.
+target:
+  registry: ghcr.io
+  repository: ocx-contrib/gohugoio/hugo
+
+source:
+  type: github_release
+  owner: gohugoio
+  repo: hugo
+  # Bare `vX.Y.Z`, no other live tag scheme upstream. Version ordering is by
+  # parsed semver, never by published_at.
+  tag_pattern: "^v(?P<version>\\d+\\.\\d+\\.\\d+)$"
+
+skip_prereleases: true
+cascade: true
+
+# Hugo versions are bare semver (`v0.164.0` -> `0.164.0`) with no `+build`
+# segment, so `date` cannot collide with upstream build metadata — the
+# python-build-standalone exception (where `date` empties the mirror) does not
+# apply. A cascade tag re-points on every re-publish; without a build segment
+# the new manifest would reuse the bare version tag and orphan the prior digest
+# for registry GC, breaking any `@sha256:` pin in a consumer's ocx.lock.
+build_timestamp: date
+
+verify:
+  github_asset_digest: true
+
+concurrency:
+  # Assets are 19-21 MB archives holding one ~60 MB binary — larger than the
+  # fleet norm, so fewer parallel downloads and bundles.
+  max_downloads: 4
+  max_bundles: 2
+  max_pushes: 2
+  rate_limit_ms: 100
+  max_retries: 3
+  compression_threads: 0
+
+# `off`, and it cannot be otherwise here. The scan only looks BELOW an
+# interface PATH entry of the form ${installPath}/<dir>. Upstream's archives
+# are FLAT — `hugo`(.exe), `README.md` and `LICENSE` sit at the archive root
+# with no wrapper directory and no `bin/` — so PATH is a bare ${installPath},
+# which is classified out of scan scope and makes `auto`/`verify` fail spec
+# load at exit 65. `off` plus a hand-listed `binaries` in metadata.json is the
+# blessed shape. The list is one entry and stable; see hugo/metadata.json.
+bin_scan: off
+
+# ─── VARIANT SELECTION — the trap this package is built around ──────────────
+#
+# Upstream ships FOUR variants of every release, not three:
+#
+#   hugo_<V>_…                     base       (widest platform coverage)
+#   hugo_extended_<V>_…            extended   <- THIS MIRROR
+#   hugo_withdeploy_<V>_…          + `hugo deploy`
+#   hugo_extended_withdeploy_<V>_… both
+#
+# Owner decision: mirror the **extended** edition. It is the edition upstream
+# recommends for general use and the one that embeds libsass. Measured
+# discriminator on v0.164.0, base vs extended, same tag:
+#
+#   $ hugo_0.164.0_linux-amd64/hugo env
+#     hugo v0.164.0-ce2470e7…            linux/amd64 …
+#     github.com/webmproject/libwebp="v1.6.0"
+#   $ hugo_extended_0.164.0_linux-amd64/hugo env
+#     hugo v0.164.0-ce2470e7…+extended   linux/amd64 …
+#     github.com/webmproject/libwebp="v1.6.0"
+#     github.com/sass/libsass="3.6.6"        <- extended only
+#
+# So the edition is observable two independent ways at runtime — the
+# `+extended` marker in `hugo version`, and the `github.com/sass/libsass=` line
+# in `hugo env`. hugo/tests/smoke.star asserts BOTH, because the one bug class
+# the platform gate cannot see from inside is "the asset regex shipped the
+# wrong variant into the right bundle".
+#
+# ─── Asset patterns: three traps, all live on every in-range release ────────
+#
+# 1. `hugo_extended_withdeploy_<V>_…` also begins with `hugo_extended_`. The
+#    patterns require `\d+\.\d+\.\d+` immediately after that prefix, so
+#    `withdeploy_` cannot match.
+# 2. A DUPLICATE linux-amd64 alias ships beside the canonical name, for the
+#    same platform, in every variant and on every release in range:
+#      hugo_extended_<V>_Linux-64bit.tar.gz   (capital L, legacy alias)
+#      hugo_extended_<V>_linux-amd64.tar.gz   (canonical)
+#    A case-insensitive or substring pattern double-matches these and fails
+#    with an ambiguous-match error. Both names span the WHOLE in-range window
+#    (0.163.2, 0.163.3, 0.164.0), so neither is a mid-range format sibling —
+#    the canonical lowercase name is anchored exactly and the alias is left
+#    alone.
+# 3. `.deb` siblings exist for both Linux arches; the `\.tar\.gz$` end anchor
+#    is what keeps them out. A single shared `hugo_<V>_checksums.txt` covers
+#    all four variants at once and matches nothing here.
+#
+# Resolution verified BOTH ways on EVERY in-range release (v0.163.2, v0.163.3,
+# v0.164.0): each pattern matches EXACTLY one asset, and every asset name
+# embeds the version of the tag carrying it. A pattern matching zero is
+# silently skipped rather than reported — it would yield a green run with a
+# missing platform.
+#
+# ─── libc gate (Phase 3.5) — the evidence, not the conclusion ───────────────
+#
+# The extended edition is a cgo build (that is how libsass gets in), so unlike
+# most Go tools on this fleet it is NOT static. Measured on both arches at BOTH
+# ends of the range (0.163.2 and 0.164.0), all four artifacts identical:
+#
+#   $ file hugo
+#     ELF 64-bit LSB executable, x86-64 … dynamically linked,
+#     interpreter /lib64/ld-linux-x86-64.so.2, for GNU/Linux 3.2.0, stripped
+#     (aarch64: interpreter /lib/ld-linux-aarch64.so.1)
+#   $ readelf -l hugo | grep -c INTERP        -> 1
+#   $ readelf -d hugo | grep NEEDED
+#     libstdc++.so.6   libm.so.6   libgcc_s.so.1   libc.so.6
+#   $ strings -a hugo | grep -c '^UPX'        -> 0   (not UPX-packed; 40/39
+#                                                     section headers present,
+#                                                     so `file` is trustworthy)
+#   $ readelf -V hugo | grep -oE 'GLIBC_[0-9.]+'   | sort -uV | tail -1
+#     GLIBC_2.34            (same floor on x86_64 and aarch64)
+#   $ readelf -V hugo | grep -oE 'GLIBCXX_[0-9.]+' | sort -uV | tail -1
+#     GLIBCXX_3.4.29
+#
+# `os.features` states what an artifact REQUIRES OF THE HOST. This one requires
+# a glibc userland, so both Linux keys carry `+libc.glibc`. A bare key here
+# would be a false universality claim that resolves onto musl hosts and dies at
+# exec; the negative control is decisive:
+#
+#   $ docker run --rm -v $PWD:/b:ro alpine:3.20   /b/hugo version
+#     exec /b/hugo: no such file or directory        <- glibc loader absent
+#   $ docker run --rm -v $PWD:/b:ro ubuntu:24.04  /b/hugo version
+#     hugo v0.164.0-…+extended linux/amd64 …         <- exit 0
+#   $ docker run --rm -v $PWD:/b:ro fedora:40     /b/hugo version
+#     hugo v0.164.0-…+extended linux/amd64 …         <- exit 0
+#
+# No `containers[].setup:` line is needed anywhere, and that is measured rather
+# than assumed: `libstdc++.so.6` and `libgcc_s.so.1` are already present in
+# STOCK ubuntu:24.04 and fedora:40, as the two exit-0 runs above show. Adding a
+# `libstdc++` install would weaken the legs' claim, not strengthen it — the
+# honest statement is "runs on the stock image".
+#
+# ─── Scope: what upstream ships and this mirror deliberately does not ───────
+#
+#   hugo_extended_<V>_darwin-universal.pkg
+#       EXCLUDED — darwin ships `.pkg` ONLY, for every one of the four
+#       variants, on every release in the fetched history. No darwin tar.gz or
+#       zip exists for hugo at all. `.pkg` is a xar archive wrapping cpio
+#       payloads; the pipeline's archive extractor supports gzip/xz/zstd
+#       tarballs, zip and raw uncompressed binaries, and nothing else. This is
+#       a hard format gap, not an oversight — see README.md.
+#   hugo_<V>_windows-arm64.zip
+#       EXCLUDED — windows/arm64 exists ONLY in the BASE variant. The
+#       extended, withdeploy and extended_withdeploy variants do not ship it on
+#       any release in range, so an `extended` windows/arm64 pattern would
+#       match zero assets, boot a real windows-11-arm runner and report SUCCESS
+#       having tested nothing. Mirroring it would mean switching the whole
+#       package to the base edition and losing libsass.
+#   hugo_<V>_linux-arm.tar.gz                     32-bit ARM
+#   hugo_<V>_{freebsd,netbsd,openbsd,solaris,dragonfly}-amd64.tar.gz
+#       Not expressible: ocx's OperatingSystem enum is Linux/Darwin/Windows and
+#       its Architecture enum is amd64/arm64 only. These are base-variant-only
+#       assets in any case.
+#   hugo_extended_<V>_linux-{amd64,arm64}.deb    distro installer
+#   hugo_extended_<V>_Linux-64bit.tar.gz         legacy duplicate of linux-amd64
+#   hugo_<V>_checksums.txt                       sidecar, shared by all variants
+assets:
+  "linux/amd64+libc.glibc":
+    - "^hugo_extended_\\d+\\.\\d+\\.\\d+_linux-amd64\\.tar\\.gz$"
+  "linux/arm64+libc.glibc":
+    - "^hugo_extended_\\d+\\.\\d+\\.\\d+_linux-arm64\\.tar\\.gz$"
+  # PASS 2 — uncomment together with the matching `platforms:` key below.
+  # windows/amd64:
+  #   - "^hugo_extended_\\d+\\.\\d+\\.\\d+_windows-amd64\\.zip$"
+
+asset_type:
+  # FLAT archives on every platform — verified with `tar tvf` / `unzip -l` at
+  # both ends of the range:
+  #
+  #   -rwxr-xr-x  62825568  hugo          (hugo.exe in the windows zip)
+  #   -rw-r--r--     13701  README.md
+  #   -rw-r--r--     11357  LICENSE
+  #
+  # No wrapper directory and no bin/, so `strip_components: 0` and PATH is a
+  # bare ${installPath}. `strip_components: 1` on a flat archive DELETES the
+  # top entry and hoists its siblings in its place — it would silently drop the
+  # binary. One rule serves both the tarballs and the zip; no per-platform
+  # override is needed.
+  type: archive
+  strip_components: 0
+
+metadata:
+  default: metadata.json
+
+catalog:
+  logo: logo.svg
+
+versions:
+  # A deliberate backfill window, not a completeness floor: the extended
+  # variant's 3-asset platform set (linux-amd64, linux-arm64, windows-amd64) is
+  # stable well below this, so nothing here is dodging a platform gap.
+  min: "0.163.2"
+  new_per_run: 10
+  # Assigned minute — never minute 0, which stampedes the fleet's runners.
+  poll_interval: "51 */6 * * *"
+
+tests:
+  # `script:` resolves from the REPOSITORY ROOT — unlike `metadata.default` and
+  # `catalog.logo` above, which resolve against this spec's own directory.
+  - name: smoke
+    script: hugo/tests/smoke.star
+
+annotations:
+  # From the Phase 1.5 license gate:
+  #   gh api repos/gohugoio/hugo/license --jq .license.spdx_id  ->  Apache-2.0
+  org.opencontainers.image.licenses: "Apache-2.0"
+
+# ─── Platform matrix ────────────────────────────────────────────────────────
+#
+# Both Linux keys are `+libc.glibc` per the measurement above, so the container
+# set is ubuntu + fedora — two different glibc vintages — and NOT alpine. An
+# alpine leg on a glibc key would be a leg that cannot pass: the artifact
+# genuinely does not load there, which is exactly what the key already says.
+platforms:
+  "linux/amd64+libc.glibc":
+    runner: ubuntu-latest
+    containers:
+      - { image: "ubuntu:24.04", shell: bash }
+      - { image: "fedora:40",    shell: bash }
+  "linux/arm64+libc.glibc":
+    # arm64 container legs run natively — no qemu — so the runner arch must
+    # match the platform or the renderer reds the leg up front.
+    runner: ubuntu-24.04-arm
+    containers:
+      - { image: "ubuntu:24.04", shell: bash }
+      - { image: "fedora:40",    shell: bash }
+  # PASS 2 — uncomment together with the matching `assets:` key above.
+  # No `containers:` on windows: those runners have no Linux container engine
+  # and the key is rejected at spec load.
+  # windows/amd64:
+  #   runner: windows-latest
+  #   shell: pwsh
+  #
+  # windows/arm64 is NOT pre-written even as a comment: the extended variant
+  # ships no windows-arm64 asset at all, so there is nothing to uncomment
+  # later. See the scope block above.
+
+notify:
+  discord:
+    webhook_secret: OCX_MIRROR_DISCORD_HOOK
+    user_id: "227748867204972545"  # pinged in-message on failures
+
+announce:
+  # Spelled out, not derived from target.repository — the logical name and the
+  # physical path are related by convention only.
+  package: gohugoio/hugo
+  fork: ocx-contrib/index
