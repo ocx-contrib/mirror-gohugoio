@@ -85,17 +85,6 @@ extended edition provides:
 <link rel="stylesheet" href="{{ $css.RelPermalink }}">
 ```
 
-## Install with ocx
-
-```sh
-ocx install ocx.sh/gohugoio/hugo
-```
-
-```sh
-# or pin a specific version
-ocx install ocx.sh/gohugoio/hugo:0.164.0
-```
-
 ## Links
 
 - [Hugo on GitHub](https://github.com/gohugoio/hugo)
