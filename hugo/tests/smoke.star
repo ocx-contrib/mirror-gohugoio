@@ -41,15 +41,32 @@ r_version = ocx.run(HUGO, "version", env=ENV)
 expect.ok(r_version)
 expect.matches(r_version.stdout, r"\d+\.\d+\.\d+")
 
-# ── Edition proof #1 — this bundle carries the EXTENDED asset ───────────────
-# Absent from the base variant of the very same tag (measured above).
-expect.contains(r_version.stdout, "+extended")
+# ── Edition split at 0.170.0 ────────────────────────────────────────────────
+# Upstream DROPPED the extended edition in v0.170.0 (libsass removed, one
+# CGO-free binary). The `hugo_extended_*` assets this spec matches still exist
+# from 0.170.0 on, but only as ALIASES of the standard archive — so the banner
+# loses `+extended`, `hugo env` loses libsass, and `css.Sass` needs an external
+# Dart Sass. Below 0.170.0 the edition proofs still guard the asset regex.
+# Banner shape on both sides: "hugo v0.170.0-<sha>[+extended] <os>/<arch> …".
+MINOR = int(r_version.stdout.split(" ")[1].lstrip("v").split(".")[1])
+EXTENDED = MINOR < 170
 
-# ── Edition proof #2 + free platform identity ───────────────────────────────
 r_env = ocx.run(HUGO, "env", env=ENV)
 expect.ok(r_env)
-# libsass is compiled into the extended edition only.
-expect.contains(r_env.stdout, "github.com/sass/libsass=")
+
+def check_edition():
+    if EXTENDED:
+        # Edition proof #1 — absent from the base variant of the same tag.
+        expect.contains(r_version.stdout, "+extended")
+        # Edition proof #2 — libsass is compiled into the extended edition only.
+        expect.contains(r_env.stdout, "github.com/sass/libsass=")
+    else:
+        # No edition left to confuse; assert the alias really is the CGO-free
+        # standard build rather than a stale extended one.
+        expect.false("+extended" in r_version.stdout)
+
+check_edition()
+
 # `hugo env` reports GOOS/GOARCH in exactly the OCI spellings ocx uses, so this
 # proves the asset regex put the right artifact in the right bundle — the one
 # bug class the platform gate cannot see from inside.
@@ -66,18 +83,28 @@ ocx.mkdir("site/content")
 
 ocx.write_file("site/hugo.toml", "baseURL = \"https://example.org/\"\ntitle = \"ocx smoke\"\n")
 
-# Nested rule + an arithmetic expression. The transpiled output must contain
-# `84px` and the FLATTENED selector `.ocx .inner`; neither string appears
-# anywhere in this input. That is the negative control against a tool that
-# merely copied its input through — a passthrough passes a "the CSS is there"
-# check and fails this one.
-ocx.write_file("site/assets/main.scss", "$w: 42px;\n.ocx { .inner { width: $w * 2; } }\n")
+# Extended (<0.170): nested rule + arithmetic through libsass. The output
+# must contain `84px` and the FLATTENED selector `.ocx .inner`; neither string
+# appears in the input — the negative control against a passthrough.
+# Standard (>=0.170): no in-process Sass, so the same proof goes through the
+# built-in CSS minifier instead: `{width:84px}` appears only after minifying.
+def write_assets():
+    if EXTENDED:
+        asset = "main.scss"
+        ocx.write_file("site/assets/" + asset, "$w: 42px;\n.ocx { .inner { width: $w * 2; } }\n")
+        pipe = "css.Sass"
+    else:
+        # The minifier picks by media type, so the asset must be `.css`.
+        asset = "main.css"
+        ocx.write_file("site/assets/" + asset, ".ocx .inner {\n  width: 84px;\n}\n")
+        pipe = "minify"
+    ocx.write_file(
+        "site/layouts/index.html",
+        "{{ $css := resources.Get \"" + asset + "\" | " + pipe + " }}"
+        + "OCXCSS[{{ $css.Content }}]OCXPAGES[{{ len site.RegularPages }}]\n",
+    )
 
-ocx.write_file(
-    "site/layouts/index.html",
-    "{{ $css := resources.Get \"main.scss\" | css.Sass }}"
-    + "OCXCSS[{{ $css.Content }}]OCXPAGES[{{ len site.RegularPages }}]\n",
-)
+write_assets()
 ocx.write_file("site/content/hello.md", "---\ntitle: hello\n---\nbody\n")
 
 # `--destination` resolves against `--source`, so the output lands at
@@ -90,6 +117,7 @@ html = ocx.read_file("site/out/index.html")
 # The computed value, and the selector Sass had to flatten to produce it.
 expect.contains(html, "84px")
 expect.contains(html, ".ocx .inner")
+expect.matches(html, r"\.ocx \.inner ?\{\s*width: ?84px;?\s*\}" if EXTENDED else r"\{width:84px\}")
 # Content discovery worked: exactly one regular page was found and counted.
 # A build that rendered the template but walked no content prints OCXPAGES[0].
 expect.contains(html, "OCXPAGES[1]")
